@@ -268,9 +268,9 @@ const S = (extra = {}) => ({ type: 'string', ...extra });
 const N = (extra = {}) => ({ type: 'number', ...extra });
 
 const tools = [
-  { type: 'function', name: 'list_lotes',         description: 'lista lotes',                                parameters: O({}) },
+  { type: 'function', name: 'list_lotes',         description: 'lista lotes (devuelve total+items compactos)', parameters: O({ limit: { type: 'integer', description: 'max 50, default 20' } }) },
   { type: 'function', name: 'create_lote',        description: 'crea lote',                                  parameters: O({ nombre: S(), color: S(), hectareas: N(), notas: S() }, ['nombre']) },
-  { type: 'function', name: 'list_animales',      description: 'lista animales (opt: loteId)',              parameters: O({ loteId: S() }) },
+  { type: 'function', name: 'list_animales',      description: 'lista animales (total+items compactos)',   parameters: O({ loteId: S(), limit: { type: 'integer', description: 'max 100, default 20' } }) },
   { type: 'function', name: 'create_animal',      description: 'crea animal',                                parameters: O({ rfid: S(), caravanaVisual: S(), categoria: S(), sexo: S({ enum: ['M','H'] }), raza: S(), loteId: S(), notas: S() }) },
   { type: 'function', name: 'update_animal',      description: 'actualiza animal',                           parameters: O({ id: S(), loteId: S(), estado: S({ enum: ['activo','vendido','muerto'] }), notas: S() }, ['id']) },
   { type: 'function', name: 'move_animal',        description: 'mueve animal a otro lote',                   parameters: O({ animalId: S(), loteDestinoId: S() }, ['animalId','loteDestinoId']) },
@@ -282,10 +282,10 @@ const tools = [
   { type: 'function', name: 'add_finanza',        description: 'ingreso/egreso',                             parameters: O({ tipo: S({ enum: ['ingreso','egreso'] }), monto: N(), moneda: S({ enum: ['ARS','USD'] }), descripcion: S() }, ['tipo','monto']) },
   { type: 'function', name: 'get_resumen',        description: 'resumen del campo',                          parameters: O({}) },
   // ── Lectura / consulta de datos ──
-  { type: 'function', name: 'list_eventos',       description: 'lista eventos (pesajes/sanidad) con filtros', parameters: O({ animalId: S(), sesionId: S(), tipo: S(), days: { type: 'integer' } }) },
-  { type: 'function', name: 'list_movimientos',   description: 'lista movimientos de animal/es entre lotes',  parameters: O({ animalId: S(), days: { type: 'integer' } }) },
-  { type: 'function', name: 'list_mediciones_pasto', description: 'lista mediciones de pasto del campo',    parameters: O({ loteId: S(), days: { type: 'integer' } }) },
-  { type: 'function', name: 'list_finanzas',      description: 'lista finanzas + totales (ingresos/egresos/balance)', parameters: O({ tipo: S({ enum: ['ingreso','egreso'] }), days: { type: 'integer' } }) },
+  { type: 'function', name: 'list_eventos',       description: 'lista eventos (devuelve total + items compactos, default top 10)', parameters: O({ animalId: S(), sesionId: S(), tipo: S(), days: { type: 'integer' }, limit: { type: 'integer', description: 'max 50, default 10' } }) },
+  { type: 'function', name: 'list_movimientos',   description: 'lista movimientos (default top 10)',         parameters: O({ animalId: S(), days: { type: 'integer' }, limit: { type: 'integer', description: 'max 50, default 10' } }) },
+  { type: 'function', name: 'list_mediciones_pasto', description: 'lista mediciones pasto + promedio (default top 10)', parameters: O({ loteId: S(), days: { type: 'integer' }, limit: { type: 'integer', description: 'max 30, default 10' } }) },
+  { type: 'function', name: 'list_finanzas',      description: 'lista finanzas + totales (default top 10)',  parameters: O({ tipo: S({ enum: ['ingreso','egreso'] }), days: { type: 'integer' }, limit: { type: 'integer', description: 'max 30, default 10' } }) },
   { type: 'function', name: 'pesaje_stats',       description: 'estadisticas de pesajes: count, promedio, min, max, mediana. Filtros opcionales',
     parameters: O({ loteId: S(), sesionId: S(), categoria: S(), sexo: S({ enum: ['M','H'] }), days: { type: 'integer' } }) },
   { type: 'function', name: 'animal_pesajes',     description: 'historial de pesajes de UN animal con ganancia diaria de peso (GDP) entre cada par',
@@ -293,11 +293,29 @@ const tools = [
 ];
 
 // ───── Implementacion de cada tool ───────────────────────────────────
+// Helper: drop keys con valor null/undefined/'' para compactar JSON.
+function compact(obj) {
+  const o = {};
+  for (const [k, v] of Object.entries(obj)) {
+    if (v == null || v === '') continue;
+    o[k] = v;
+  }
+  return o;
+}
+// Helper: clamp limit a [1, max] con default.
+function clamp(n, def, max) { return Math.min(Math.max(parseInt(n) || def, 1), max); }
+// Helper: timestamp ISO truncado a minutos (saca ms y zona).
+function tsMin(ts) { return ts ? String(ts).slice(0, 16) : null; }
+
 const executors = {
-  async list_lotes() {
+  async list_lotes({ limit } = {}) {
     const all = await ensureCache();
     const lotes = (all.lotes || []).filter(l => !l.deletedAt);
-    return lotes.map(l => ({ id: l.id, nombre: l.nombre, hectareas: l.hectareas, color: l.color }));
+    const lim = clamp(limit, 20, 50);
+    return {
+      total: lotes.length,
+      items: lotes.slice(0, lim).map(l => compact({ id: l.id, nombre: l.nombre, ha: l.hectareas, color: l.color })),
+    };
   },
   async create_lote(args) {
     const ts = nowIso();
@@ -306,14 +324,19 @@ const executors = {
     invalidateCache();
     return { id: row.id, nombre: row.nombre };
   },
-  async list_animales({ loteId } = {}) {
+  async list_animales({ loteId, limit } = {}) {
     const all = await ensureCache();
     let arr = (all.animales || []).filter(a => !a.deletedAt);
     if (loteId) arr = arr.filter(a => a.loteId === loteId);
-    return arr.map(a => ({
-      id: a.id, rfid: a.rfid, caravanaVisual: a.caravanaVisual,
-      categoria: a.categoria, sexo: a.sexo, loteId: a.loteId, estado: a.estado,
-    }));
+    const lim = clamp(limit, 20, 100);
+    return {
+      total: arr.length,
+      items: arr.slice(0, lim).map(a => compact({
+        id: a.id, rfid: a.rfid, cv: a.caravanaVisual,
+        cat: a.categoria, sx: a.sexo, lote: a.loteId,
+        est: a.estado !== 'activo' ? a.estado : null, // activo es default, no lo mandamos
+      })),
+    };
   },
   async create_animal(args) {
     const ts = nowIso();
@@ -434,7 +457,7 @@ const executors = {
   },
 
   // ───── Lectura / Stats ─────────────────────────────────────────────
-  async list_eventos({ animalId, sesionId, tipo, days } = {}) {
+  async list_eventos({ animalId, sesionId, tipo, days, limit } = {}) {
     const all = await ensureCache();
     let arr = (all.eventos || []).filter(e => !e.deletedAt);
     if (animalId) arr = arr.filter(e => e.animalId === animalId);
@@ -445,16 +468,17 @@ const executors = {
       arr = arr.filter(e => new Date(e.ts).getTime() >= cutoff);
     }
     arr.sort((a, b) => new Date(b.ts) - new Date(a.ts));
+    const lim = clamp(limit, 10, 50);
     return {
       total: arr.length,
-      items: arr.slice(0, 100).map(e => ({
-        id: e.id, animalId: e.animalId, sesionId: e.sesionId,
-        tipo: e.tipo, peso: e.peso, ts: e.ts, notas: e.notas,
+      items: arr.slice(0, lim).map(e => compact({
+        id: e.id, a: e.animalId, ts: tsMin(e.ts), p: e.peso,
+        t: e.tipo, n: e.notas,
       })),
     };
   },
 
-  async list_movimientos({ animalId, days } = {}) {
+  async list_movimientos({ animalId, days, limit } = {}) {
     const all = await ensureCache();
     let arr = (all.movimientos || []).slice();
     if (animalId) arr = arr.filter(m => m.animalId === animalId);
@@ -463,10 +487,16 @@ const executors = {
       arr = arr.filter(m => new Date(m.ts).getTime() >= cutoff);
     }
     arr.sort((a, b) => new Date(b.ts) - new Date(a.ts));
-    return { total: arr.length, items: arr.slice(0, 100) };
+    const lim = clamp(limit, 10, 50);
+    return {
+      total: arr.length,
+      items: arr.slice(0, lim).map(m => compact({
+        a: m.animalId, ts: tsMin(m.ts), de: m.loteOrigenId, a_: m.loteDestinoId,
+      })),
+    };
   },
 
-  async list_mediciones_pasto({ loteId, days } = {}) {
+  async list_mediciones_pasto({ loteId, days, limit } = {}) {
     const all = await ensureCache();
     let arr = (all.mediciones_pasto || []).filter(m => !m.deletedAt);
     if (loteId) arr = arr.filter(m => m.loteId === loteId);
@@ -476,14 +506,17 @@ const executors = {
     }
     arr.sort((a, b) => new Date(b.fecha) - new Date(a.fecha));
     const promKg = arr.length ? arr.reduce((a,m)=>a+(m.kgMsHa||0),0)/arr.length : null;
-    return {
+    const lim = clamp(limit, 10, 30);
+    return compact({
       total: arr.length,
-      promedioKgMsHa: promKg ? Math.round(promKg) : null,
-      items: arr.slice(0, 50).map(m => ({ id: m.id, loteId: m.loteId, fecha: m.fecha, kgMsHa: m.kgMsHa, cantidadMuestras: m.cantidadMuestras })),
-    };
+      promKgMsHa: promKg ? Math.round(promKg) : null,
+      items: arr.slice(0, lim).map(m => compact({
+        lote: m.loteId, fecha: tsMin(m.fecha), kg: m.kgMsHa, n: m.cantidadMuestras,
+      })),
+    });
   },
 
-  async list_finanzas({ tipo, days } = {}) {
+  async list_finanzas({ tipo, days, limit } = {}) {
     const all = await ensureCache();
     let arr = (all.finanzas || []).filter(f => !f.deletedAt);
     if (tipo) arr = arr.filter(f => f.tipo === tipo);
@@ -494,12 +527,15 @@ const executors = {
     arr.sort((a, b) => new Date(b.fecha) - new Date(a.fecha));
     const ingresos = arr.filter(f => f.tipo === 'ingreso').reduce((a, f) => a + (f.monto || 0), 0);
     const egresos  = arr.filter(f => f.tipo === 'egreso').reduce((a, f) => a + (f.monto || 0), 0);
+    const lim = clamp(limit, 10, 30);
     return {
       total: arr.length,
-      totalIngresos: Math.round(ingresos),
-      totalEgresos: Math.round(egresos),
+      ingresos: Math.round(ingresos),
+      egresos: Math.round(egresos),
       balance: Math.round(ingresos - egresos),
-      items: arr.slice(0, 30).map(f => ({ id: f.id, tipo: f.tipo, monto: f.monto, moneda: f.moneda, fecha: f.fecha, descripcion: f.descripcion })),
+      items: arr.slice(0, lim).map(f => compact({
+        t: f.tipo, m: f.monto, mn: f.moneda, fecha: tsMin(f.fecha), d: f.descripcion,
+      })),
     };
   },
 
@@ -563,30 +599,32 @@ const executors = {
       };
     }
 
-    // GDP entre cada par consecutivo
+    // GDP entre cada par consecutivo (en kg/dia, redondeado a gramos).
+    // Cap a los últimos 15 para no inflar el contexto.
     const conGdp = eventos.map((e, i) => {
-      if (i === 0) return { peso: e.peso, ts: e.ts, gdpDesdeAnterior: null };
-      const prev = eventos[i - 1];
-      const dias = (new Date(e.ts) - new Date(prev.ts)) / 86400000;
-      const gdp = dias > 0 ? (e.peso - prev.peso) / dias : null;
-      return { peso: e.peso, ts: e.ts, gdpDesdeAnterior: gdp != null ? Math.round(gdp * 1000) / 1000 : null };
+      const prev = i > 0 ? eventos[i - 1] : null;
+      const gdp = prev && new Date(e.ts) > new Date(prev.ts)
+        ? Math.round((e.peso - prev.peso) / ((new Date(e.ts) - new Date(prev.ts)) / 86400000) * 1000) / 1000
+        : null;
+      return compact({ p: e.peso, ts: tsMin(e.ts), gdp });
     });
+    const tailPesajes = conGdp.slice(-15);
 
     const primer = eventos[0];
     const ult = eventos[eventos.length - 1];
     const diasTotal = (new Date(ult.ts) - new Date(primer.ts)) / 86400000;
     const gdpPromedio = diasTotal > 0 ? Math.round((ult.peso - primer.peso) / diasTotal * 1000) / 1000 : null;
 
-    return {
-      animal: { id: animal.id, rfid: animal.rfid, caravanaVisual: animal.caravanaVisual, categoria: animal.categoria, sexo: animal.sexo },
-      cantidadPesajes: eventos.length,
+    return compact({
+      animal: compact({ id: animal.id, cv: animal.caravanaVisual, cat: animal.categoria, sx: animal.sexo }),
+      n: eventos.length,
       primerPeso: primer.peso,
       ultimoPeso: ult.peso,
       gananciaTotal: ult.peso - primer.peso,
-      diasEntrePrimerUltimo: Math.round(diasTotal),
+      dias: Math.round(diasTotal),
       gdpPromedio,
-      pesajes: conGdp,
-    };
+      ultimos15: tailPesajes,
+    });
   },
 };
 
@@ -730,6 +768,8 @@ const SYSTEM_PROMPT = [
   '- Para preguntas tipo "cuanto pesa en promedio" usa pesaje_stats directo, no list_eventos.',
   '- Los eventos de la manga guardan tipo="manga" con peso!=null; pesaje_stats ya los toma. NO filtres por tipo="pesaje" cuando consultes peso.',
   '- Cuando se pida "ultimos pesajes" usa list_eventos sin filtrar tipo, los items con peso!=null son pesajes.',
+  '- Las tools de listado devuelven { total, items[] } con campos abreviados para ahorrar tokens: p=peso, ts=timestamp, a=animalId, t=tipo, n=notas|cantidad, cv=caravanaVisual, cat=categoria, sx=sexo, lote=loteId, est=estado, kg=kgMsHa, m=monto, mn=moneda, d=descripcion, gdp=ganancia diaria de peso (kg/dia).',
+  '- Default devuelven 10-20 items. Si necesitas mas, pasa limit explicito (max 50-100 segun tool).',
   '- Ejecuta funciones al toque sin pedir confirmacion si esta claro.',
   '- Si falta un id, llama primero al list_* correspondiente.',
   '- No leas ids ni uuids en voz alta. Usa caravana visual o nombre.',
