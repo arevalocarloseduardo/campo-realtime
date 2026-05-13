@@ -286,8 +286,8 @@ const tools = [
   { type: 'function', name: 'list_movimientos',   description: 'lista movimientos (default top 10)',         parameters: O({ animalId: S(), days: { type: 'integer' }, limit: { type: 'integer', description: 'max 50, default 10' } }) },
   { type: 'function', name: 'list_mediciones_pasto', description: 'lista mediciones pasto + promedio (default top 10)', parameters: O({ loteId: S(), days: { type: 'integer' }, limit: { type: 'integer', description: 'max 30, default 10' } }) },
   { type: 'function', name: 'list_finanzas',      description: 'lista finanzas + totales (default top 10)',  parameters: O({ tipo: S({ enum: ['ingreso','egreso'] }), days: { type: 'integer' }, limit: { type: 'integer', description: 'max 30, default 10' } }) },
-  { type: 'function', name: 'pesaje_stats',       description: 'estadisticas de pesajes: count, promedio, min, max, mediana. Filtros opcionales',
-    parameters: O({ loteId: S(), sesionId: S(), categoria: S(), sexo: S({ enum: ['M','H'] }), days: { type: 'integer' } }) },
+  { type: 'function', name: 'pesaje_stats',       description: 'estadisticas de pesajes: count, promedio, min, max, mediana. Filtros opcionales. excludeSesionId permite excluir UNA sesion (ej. excluir "toros" para obtener terneros).',
+    parameters: O({ loteId: S(), sesionId: S(), excludeSesionId: S(), categoria: S(), sexo: S({ enum: ['M','H'] }), days: { type: 'integer' } }) },
   { type: 'function', name: 'animal_pesajes',     description: 'historial de pesajes de UN animal con ganancia diaria de peso (GDP) entre cada par',
     parameters: O({ animalId: S() }, ['animalId']) },
 ];
@@ -380,9 +380,31 @@ const executors = {
   },
   async list_sesiones() {
     const all = await ensureCache();
+    // Contamos pesajes por sesion — clave para identificar "toros" vs "terneros"
+    // cuando los animales no tienen categoria cargada.
+    const pesajesPorSesion = {};
+    for (const e of (all.eventos || [])) {
+      if (e.deletedAt || typeof e.peso !== 'number') continue;
+      if (!e.sesionId) continue;
+      const stats = pesajesPorSesion[e.sesionId] = pesajesPorSesion[e.sesionId] || { n: 0, sum: 0, min: Infinity, max: -Infinity };
+      stats.n++; stats.sum += e.peso;
+      if (e.peso < stats.min) stats.min = e.peso;
+      if (e.peso > stats.max) stats.max = e.peso;
+    }
     return (all.sesiones || [])
       .filter(s => !s.deletedAt)
-      .map(s => ({ id: s.id, nombre: s.nombre, tipo: s.tipo, iniciadaEn: s.iniciadaEn, cerradaEn: s.cerradaEn }));
+      .map(s => {
+        const st = pesajesPorSesion[s.id];
+        return compact({
+          id: s.id, nombre: s.nombre, tipo: s.tipo,
+          iniciadaEn: tsMin(s.iniciadaEn),
+          cerradaEn: s.cerradaEn ? tsMin(s.cerradaEn) : null,
+          nPesos: st ? st.n : 0,
+          promPeso: st ? Math.round(st.sum / st.n * 10) / 10 : null,
+          minPeso: st ? st.min : null,
+          maxPeso: st ? st.max : null,
+        });
+      });
   },
   async create_sesion({ tipo, nombre }) {
     const ts = nowIso();
@@ -539,7 +561,7 @@ const executors = {
     };
   },
 
-  async pesaje_stats({ loteId, sesionId, categoria, sexo, days } = {}) {
+  async pesaje_stats({ loteId, sesionId, excludeSesionId, categoria, sexo, days } = {}) {
     const all = await ensureCache();
     const animales = (all.animales || []).filter(a => !a.deletedAt);
     const animalIndex = new Map(animales.map(a => [a.id, a]));
@@ -557,7 +579,8 @@ const executors = {
         return true;
       });
     }
-    if (sesionId) eventos = eventos.filter(e => e.sesionId === sesionId);
+    if (sesionId)        eventos = eventos.filter(e => e.sesionId === sesionId);
+    if (excludeSesionId) eventos = eventos.filter(e => e.sesionId !== excludeSesionId);
     if (days) {
       const cutoff = Date.now() - days * 86400000;
       eventos = eventos.filter(e => new Date(e.ts).getTime() >= cutoff);
@@ -788,6 +811,7 @@ const SYSTEM_PROMPT = [
   '- Las tools de listado devuelven { total, items[] } con campos abreviados para ahorrar tokens: p=peso, ts=timestamp, a=animalId, t=tipo, n=notas|cantidad, cv=caravanaVisual, cat=categoria, sx=sexo, lote=loteId, est=estado, kg=kgMsHa, m=monto, mn=moneda, d=descripcion, gdp=ganancia diaria de peso (kg/dia).',
   '- Si pesaje_stats devuelve count=0 con un "hint", explica al usuario lo que dice el hint en voz humana corta. NO te quedes callado.',
   '- Si el usuario pide promedio de una categoria/sexo y no hay datos, primero probá sin filtro y avisale que los animales no tienen esa categoria cargada.',
+  '- IMPORTANTE: cuando los animales no tengan categoria, los pesajes suelen estar agrupados por SESION (ej. sesion "toros" = toros adultos, otras = terneros). Si el usuario pide "promedio de terneros" o "promedio de toros" y no hay categoria, primero llama list_sesiones para ver nombres + nPesos de cada una. Si hay sesion "toros", usa pesaje_stats({excludeSesionId: <id de toros>}) para terneros, o pesaje_stats({sesionId: <id de toros>}) para toros. Si no hay sesion con ese nombre, avisa.',
   '- Default devuelven 10-20 items. Si necesitas mas, pasa limit explicito (max 50-100 segun tool).',
   '- Ejecuta funciones al toque sin pedir confirmacion si esta claro.',
   '- Si falta un id, llama primero al list_* correspondiente.',
