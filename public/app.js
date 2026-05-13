@@ -418,7 +418,9 @@ const executors = {
     const animales = (all.animales || []).filter(a => !a.deletedAt && a.estado !== 'vendido' && a.estado !== 'muerto');
     const sesiones = (all.sesiones || []).filter(s => !s.deletedAt);
     const sesionesAbiertas = sesiones.filter(s => !s.cerradaEn);
-    const pesajes = (all.eventos || []).filter(e => !e.deletedAt && e.tipo === 'pesaje' && e.peso != null);
+    // Pesaje = cualquier evento con peso registrado (sin importar tipo —
+    // las sesiones de manga guardan peso con tipo='manga').
+    const pesajes = (all.eventos || []).filter(e => !e.deletedAt && typeof e.peso === 'number');
     const ult = pesajes.length ? pesajes.slice().sort((a,b)=>new Date(b.ts)-new Date(a.ts))[0] : null;
     return {
       campo: state.campos.find(c => c.id === state.campoId)?.nombre,
@@ -506,7 +508,8 @@ const executors = {
     const animales = (all.animales || []).filter(a => !a.deletedAt);
     const animalIndex = new Map(animales.map(a => [a.id, a]));
 
-    let eventos = (all.eventos || []).filter(e => !e.deletedAt && e.tipo === 'pesaje' && typeof e.peso === 'number');
+    // Pesaje = cualquier evento con peso!=null (sin filtrar por tipo).
+    let eventos = (all.eventos || []).filter(e => !e.deletedAt && typeof e.peso === 'number');
 
     if (loteId || categoria || sexo) {
       eventos = eventos.filter(e => {
@@ -550,7 +553,7 @@ const executors = {
     if (!animal) throw new Error('Animal no encontrado');
 
     const eventos = (all.eventos || [])
-      .filter(e => !e.deletedAt && e.animalId === animalId && e.tipo === 'pesaje' && typeof e.peso === 'number')
+      .filter(e => !e.deletedAt && e.animalId === animalId && typeof e.peso === 'number')
       .sort((a, b) => new Date(a.ts) - new Date(b.ts));
 
     if (!eventos.length) {
@@ -725,6 +728,8 @@ const SYSTEM_PROMPT = [
   'REGLAS:',
   '- Respuestas brevisimas: 1-2 frases, sin floreo.',
   '- Para preguntas tipo "cuanto pesa en promedio" usa pesaje_stats directo, no list_eventos.',
+  '- Los eventos de la manga guardan tipo="manga" con peso!=null; pesaje_stats ya los toma. NO filtres por tipo="pesaje" cuando consultes peso.',
+  '- Cuando se pida "ultimos pesajes" usa list_eventos sin filtrar tipo, los items con peso!=null son pesajes.',
   '- Ejecuta funciones al toque sin pedir confirmacion si esta claro.',
   '- Si falta un id, llama primero al list_* correspondiente.',
   '- No leas ids ni uuids en voz alta. Usa caravana visual o nombre.',
