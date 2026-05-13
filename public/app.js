@@ -563,7 +563,24 @@ const executors = {
       eventos = eventos.filter(e => new Date(e.ts).getTime() >= cutoff);
     }
 
-    if (!eventos.length) return { count: 0, mensaje: 'No hay pesajes con esos filtros' };
+    if (!eventos.length) {
+      // Devolvemos hint para que el modelo pueda explicar por qué dio 0.
+      const cats = [...new Set(animales.map(a => a.categoria).filter(Boolean))];
+      const sexos = [...new Set(animales.map(a => a.sexo).filter(Boolean))];
+      const totalConPeso = (all.eventos || []).filter(e => !e.deletedAt && typeof e.peso === 'number').length;
+      return compact({
+        count: 0,
+        mensaje: 'No hay pesajes con esos filtros',
+        totalPesajesGlobal: totalConPeso,
+        categoriasDisponibles: cats.length ? cats : null,
+        sexosDisponibles: sexos.length ? sexos : null,
+        hint: !cats.length && categoria
+          ? `Ningun animal tiene categoria cargada (${animales.length} totales). Pedile al usuario que cargue categoria, o consultá sin filtro.`
+          : (!sexos.length && sexo
+            ? `Ningun animal tiene sexo cargado. Consultá sin filtro o pedile al usuario que lo cargue.`
+            : null),
+      });
+    }
 
     const pesos = eventos.map(e => e.peso).sort((a, b) => a - b);
     const sum = pesos.reduce((a, b) => a + b, 0);
@@ -769,6 +786,8 @@ const SYSTEM_PROMPT = [
   '- Los eventos de la manga guardan tipo="manga" con peso!=null; pesaje_stats ya los toma. NO filtres por tipo="pesaje" cuando consultes peso.',
   '- Cuando se pida "ultimos pesajes" usa list_eventos sin filtrar tipo, los items con peso!=null son pesajes.',
   '- Las tools de listado devuelven { total, items[] } con campos abreviados para ahorrar tokens: p=peso, ts=timestamp, a=animalId, t=tipo, n=notas|cantidad, cv=caravanaVisual, cat=categoria, sx=sexo, lote=loteId, est=estado, kg=kgMsHa, m=monto, mn=moneda, d=descripcion, gdp=ganancia diaria de peso (kg/dia).',
+  '- Si pesaje_stats devuelve count=0 con un "hint", explica al usuario lo que dice el hint en voz humana corta. NO te quedes callado.',
+  '- Si el usuario pide promedio de una categoria/sexo y no hay datos, primero probá sin filtro y avisale que los animales no tienen esa categoria cargada.',
   '- Default devuelven 10-20 items. Si necesitas mas, pasa limit explicito (max 50-100 segun tool).',
   '- Ejecuta funciones al toque sin pedir confirmacion si esta claro.',
   '- Si falta un id, llama primero al list_* correspondiente.',
