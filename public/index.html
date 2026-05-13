@@ -1,0 +1,146 @@
+<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+  <meta name="theme-color" content="#050810" />
+  <title>Campo Papi · JARVIS</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Orbitron:wght@400;500;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="/style.css" />
+</head>
+<body>
+
+  <!-- Scanlines decorativas (overlay) -->
+  <div class="scanlines" aria-hidden="true"></div>
+
+  <main id="app">
+
+    <!-- ───── LOGIN ───── -->
+    <section id="login" class="login-screen">
+      <div class="login-frame">
+        <div class="frame-corner tl"></div>
+        <div class="frame-corner tr"></div>
+        <div class="frame-corner bl"></div>
+        <div class="frame-corner br"></div>
+        <h1 class="login-title">CAMPO · PAPI</h1>
+        <p class="login-subtitle">VOICE INTERFACE</p>
+        <form id="login-form" autocomplete="on">
+          <label class="field">
+            <span class="field-key">EMAIL</span>
+            <input id="email" name="email" type="email" required autocomplete="username" placeholder="user@dominio" />
+          </label>
+          <label class="field">
+            <span class="field-key">PASSWORD</span>
+            <input id="password" name="password" type="password" required autocomplete="current-password" placeholder="••••••••" />
+          </label>
+          <button type="submit" class="btn-primary">
+            <span>AUTHENTICATE</span>
+            <span class="btn-arrow">▸</span>
+          </button>
+        </form>
+        <p id="login-error" class="error"></p>
+      </div>
+    </section>
+
+    <!-- ───── MAIN INTERFACE ───── -->
+    <section id="main" class="hidden">
+
+      <!-- HUD: top-left status -->
+      <div class="hud hud-tl">
+        <span class="hud-dot" id="status-dot"></span>
+        <span class="hud-text" id="status-text">STANDBY</span>
+        <span class="hud-sep">·</span>
+        <span class="hud-text" id="stat-time">00:00</span>
+      </div>
+
+      <!-- HUD: top-right user -->
+      <div class="hud hud-tr">
+        <span class="hud-text" id="user-name"></span>
+        <span class="hud-sep" id="user-sep">·</span>
+        <span class="hud-text" id="campo-name"></span>
+        <button id="logout-btn" class="hud-btn" title="Salir" aria-label="Salir">✕</button>
+      </div>
+
+      <!-- ORB: centro, clickable -->
+      <button id="orb" class="orb" type="button" aria-label="Conectar / cortar">
+
+        <div class="orb-halo" aria-hidden="true"></div>
+
+        <svg class="orb-ring orb-ring-outer" viewBox="0 0 400 400" aria-hidden="true">
+          <circle cx="200" cy="200" r="195" />
+          <circle cx="200" cy="200" r="195" class="ring-ticks" />
+        </svg>
+
+        <svg class="orb-ring orb-ring-mid" viewBox="0 0 400 400" aria-hidden="true">
+          <circle cx="200" cy="200" r="170" />
+          <circle cx="200" cy="200" r="170" class="ring-arc" />
+        </svg>
+
+        <svg class="orb-ring orb-ring-inner" viewBox="0 0 400 400" aria-hidden="true">
+          <circle cx="200" cy="200" r="140" />
+        </svg>
+
+        <div id="orb-bars" class="orb-bars" aria-hidden="true"></div>
+
+        <div class="orb-core" aria-hidden="true">
+          <div class="orb-core-inner"></div>
+        </div>
+
+        <div id="orb-label" class="orb-label">TAP TO CONNECT</div>
+      </button>
+
+      <!-- HUD: bottom-left stats -->
+      <div class="hud hud-bl" id="stats">
+        <div class="hud-cell"><span class="hud-key">IN</span><span class="hud-val" id="stat-in">0</span></div>
+        <div class="hud-cell"><span class="hud-key">OUT</span><span class="hud-val" id="stat-out">0</span></div>
+        <div class="hud-cell"><span class="hud-key">CACHE</span><span class="hud-val" id="stat-cached">0</span></div>
+        <div class="hud-cell hud-cell-cost"><span class="hud-key">USD</span><span class="hud-val" id="stat-cost">0.0000</span></div>
+      </div>
+
+      <!-- HUD: bottom-right controls -->
+      <div class="hud hud-br">
+        <label class="hud-cell hud-voice">
+          <span class="hud-key">VOICE</span>
+          <select id="voice-select" class="hud-select">
+            <option value="cedar">cedar</option>
+            <option value="marin">marin</option>
+            <option value="alloy">alloy</option>
+            <option value="ash">ash</option>
+            <option value="ballad">ballad</option>
+            <option value="coral">coral</option>
+            <option value="echo">echo</option>
+            <option value="sage">sage</option>
+            <option value="shimmer">shimmer</option>
+            <option value="verse">verse</option>
+          </select>
+        </label>
+        <button id="drawer-toggle" class="hud-btn" title="Log" aria-label="Abrir log">☰</button>
+      </div>
+
+      <!-- DRAWER: log / transcript / history -->
+      <aside id="drawer" class="drawer">
+        <div class="drawer-header">
+          <h3 class="drawer-title">▸ LOG</h3>
+          <button id="drawer-close" class="hud-btn" aria-label="Cerrar">✕</button>
+        </div>
+        <div id="transcript" class="transcript" aria-live="polite"></div>
+        <details id="history" class="history">
+          <summary>
+            <span>SESIONES ANTERIORES</span>
+            <span id="history-summary" class="hud-key"></span>
+          </summary>
+          <div id="history-list" class="history-list"></div>
+          <button id="history-clear" class="ghost small">VACIAR HISTORIAL</button>
+        </details>
+      </aside>
+
+      <audio id="remote-audio" autoplay playsinline></audio>
+    </section>
+
+  </main>
+
+  <script type="module" src="/app.js"></script>
+</body>
+</html>
