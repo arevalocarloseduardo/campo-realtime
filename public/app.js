@@ -281,6 +281,15 @@ const tools = [
   { type: 'function', name: 'add_medicion_pasto', description: 'medicion pasto kgMS/ha',                     parameters: O({ loteId: S(), kgMsHa: N(), cantidadMuestras: { type: 'integer' } }, ['loteId','kgMsHa']) },
   { type: 'function', name: 'add_finanza',        description: 'ingreso/egreso',                             parameters: O({ tipo: S({ enum: ['ingreso','egreso'] }), monto: N(), moneda: S({ enum: ['ARS','USD'] }), descripcion: S() }, ['tipo','monto']) },
   { type: 'function', name: 'get_resumen',        description: 'resumen del campo',                          parameters: O({}) },
+  // ── Lectura / consulta de datos ──
+  { type: 'function', name: 'list_eventos',       description: 'lista eventos (pesajes/sanidad) con filtros', parameters: O({ animalId: S(), sesionId: S(), tipo: S(), days: { type: 'integer' } }) },
+  { type: 'function', name: 'list_movimientos',   description: 'lista movimientos de animal/es entre lotes',  parameters: O({ animalId: S(), days: { type: 'integer' } }) },
+  { type: 'function', name: 'list_mediciones_pasto', description: 'lista mediciones de pasto del campo',    parameters: O({ loteId: S(), days: { type: 'integer' } }) },
+  { type: 'function', name: 'list_finanzas',      description: 'lista finanzas + totales (ingresos/egresos/balance)', parameters: O({ tipo: S({ enum: ['ingreso','egreso'] }), days: { type: 'integer' } }) },
+  { type: 'function', name: 'pesaje_stats',       description: 'estadisticas de pesajes: count, promedio, min, max, mediana. Filtros opcionales',
+    parameters: O({ loteId: S(), sesionId: S(), categoria: S(), sexo: S({ enum: ['M','H'] }), days: { type: 'integer' } }) },
+  { type: 'function', name: 'animal_pesajes',     description: 'historial de pesajes de UN animal con ganancia diaria de peso (GDP) entre cada par',
+    parameters: O({ animalId: S() }, ['animalId']) },
 ];
 
 // ───── Implementacion de cada tool ───────────────────────────────────
@@ -409,12 +418,171 @@ const executors = {
     const animales = (all.animales || []).filter(a => !a.deletedAt && a.estado !== 'vendido' && a.estado !== 'muerto');
     const sesiones = (all.sesiones || []).filter(s => !s.deletedAt);
     const sesionesAbiertas = sesiones.filter(s => !s.cerradaEn);
+    const pesajes = (all.eventos || []).filter(e => !e.deletedAt && e.tipo === 'pesaje' && e.peso != null);
+    const ult = pesajes.length ? pesajes.slice().sort((a,b)=>new Date(b.ts)-new Date(a.ts))[0] : null;
     return {
       campo: state.campos.find(c => c.id === state.campoId)?.nombre,
       lotes: lotes.length,
       animales: animales.length,
       sesionesAbiertas: sesionesAbiertas.length,
       sesionesTotales: sesiones.length,
+      pesajesTotales: pesajes.length,
+      ultimoPesajeTs: ult?.ts || null,
+    };
+  },
+
+  // ───── Lectura / Stats ─────────────────────────────────────────────
+  async list_eventos({ animalId, sesionId, tipo, days } = {}) {
+    const all = await ensureCache();
+    let arr = (all.eventos || []).filter(e => !e.deletedAt);
+    if (animalId) arr = arr.filter(e => e.animalId === animalId);
+    if (sesionId) arr = arr.filter(e => e.sesionId === sesionId);
+    if (tipo)     arr = arr.filter(e => e.tipo === tipo);
+    if (days) {
+      const cutoff = Date.now() - days * 86400000;
+      arr = arr.filter(e => new Date(e.ts).getTime() >= cutoff);
+    }
+    arr.sort((a, b) => new Date(b.ts) - new Date(a.ts));
+    return {
+      total: arr.length,
+      items: arr.slice(0, 100).map(e => ({
+        id: e.id, animalId: e.animalId, sesionId: e.sesionId,
+        tipo: e.tipo, peso: e.peso, ts: e.ts, notas: e.notas,
+      })),
+    };
+  },
+
+  async list_movimientos({ animalId, days } = {}) {
+    const all = await ensureCache();
+    let arr = (all.movimientos || []).slice();
+    if (animalId) arr = arr.filter(m => m.animalId === animalId);
+    if (days) {
+      const cutoff = Date.now() - days * 86400000;
+      arr = arr.filter(m => new Date(m.ts).getTime() >= cutoff);
+    }
+    arr.sort((a, b) => new Date(b.ts) - new Date(a.ts));
+    return { total: arr.length, items: arr.slice(0, 100) };
+  },
+
+  async list_mediciones_pasto({ loteId, days } = {}) {
+    const all = await ensureCache();
+    let arr = (all.mediciones_pasto || []).filter(m => !m.deletedAt);
+    if (loteId) arr = arr.filter(m => m.loteId === loteId);
+    if (days) {
+      const cutoff = Date.now() - days * 86400000;
+      arr = arr.filter(m => new Date(m.fecha).getTime() >= cutoff);
+    }
+    arr.sort((a, b) => new Date(b.fecha) - new Date(a.fecha));
+    const promKg = arr.length ? arr.reduce((a,m)=>a+(m.kgMsHa||0),0)/arr.length : null;
+    return {
+      total: arr.length,
+      promedioKgMsHa: promKg ? Math.round(promKg) : null,
+      items: arr.slice(0, 50).map(m => ({ id: m.id, loteId: m.loteId, fecha: m.fecha, kgMsHa: m.kgMsHa, cantidadMuestras: m.cantidadMuestras })),
+    };
+  },
+
+  async list_finanzas({ tipo, days } = {}) {
+    const all = await ensureCache();
+    let arr = (all.finanzas || []).filter(f => !f.deletedAt);
+    if (tipo) arr = arr.filter(f => f.tipo === tipo);
+    if (days) {
+      const cutoff = Date.now() - days * 86400000;
+      arr = arr.filter(f => new Date(f.fecha).getTime() >= cutoff);
+    }
+    arr.sort((a, b) => new Date(b.fecha) - new Date(a.fecha));
+    const ingresos = arr.filter(f => f.tipo === 'ingreso').reduce((a, f) => a + (f.monto || 0), 0);
+    const egresos  = arr.filter(f => f.tipo === 'egreso').reduce((a, f) => a + (f.monto || 0), 0);
+    return {
+      total: arr.length,
+      totalIngresos: Math.round(ingresos),
+      totalEgresos: Math.round(egresos),
+      balance: Math.round(ingresos - egresos),
+      items: arr.slice(0, 30).map(f => ({ id: f.id, tipo: f.tipo, monto: f.monto, moneda: f.moneda, fecha: f.fecha, descripcion: f.descripcion })),
+    };
+  },
+
+  async pesaje_stats({ loteId, sesionId, categoria, sexo, days } = {}) {
+    const all = await ensureCache();
+    const animales = (all.animales || []).filter(a => !a.deletedAt);
+    const animalIndex = new Map(animales.map(a => [a.id, a]));
+
+    let eventos = (all.eventos || []).filter(e => !e.deletedAt && e.tipo === 'pesaje' && typeof e.peso === 'number');
+
+    if (loteId || categoria || sexo) {
+      eventos = eventos.filter(e => {
+        const a = animalIndex.get(e.animalId);
+        if (!a) return false;
+        if (loteId && a.loteId !== loteId) return false;
+        if (categoria && a.categoria !== categoria) return false;
+        if (sexo && a.sexo !== sexo) return false;
+        return true;
+      });
+    }
+    if (sesionId) eventos = eventos.filter(e => e.sesionId === sesionId);
+    if (days) {
+      const cutoff = Date.now() - days * 86400000;
+      eventos = eventos.filter(e => new Date(e.ts).getTime() >= cutoff);
+    }
+
+    if (!eventos.length) return { count: 0, mensaje: 'No hay pesajes con esos filtros' };
+
+    const pesos = eventos.map(e => e.peso).sort((a, b) => a - b);
+    const sum = pesos.reduce((a, b) => a + b, 0);
+    const promedio = sum / pesos.length;
+    const mediana = pesos[Math.floor(pesos.length / 2)];
+    const animalesUnicos = new Set(eventos.map(e => e.animalId)).size;
+    const ultimo = eventos.slice().sort((a, b) => new Date(b.ts) - new Date(a.ts))[0];
+
+    return {
+      count: eventos.length,
+      animalesUnicos,
+      promedio: Math.round(promedio * 10) / 10,
+      mediana,
+      min: pesos[0],
+      max: pesos[pesos.length - 1],
+      ultimoPesaje: { peso: ultimo.peso, ts: ultimo.ts, animalId: ultimo.animalId },
+    };
+  },
+
+  async animal_pesajes({ animalId }) {
+    const all = await ensureCache();
+    const animal = (all.animales || []).find(a => a.id === animalId);
+    if (!animal) throw new Error('Animal no encontrado');
+
+    const eventos = (all.eventos || [])
+      .filter(e => !e.deletedAt && e.animalId === animalId && e.tipo === 'pesaje' && typeof e.peso === 'number')
+      .sort((a, b) => new Date(a.ts) - new Date(b.ts));
+
+    if (!eventos.length) {
+      return {
+        animal: { id: animal.id, rfid: animal.rfid, caravanaVisual: animal.caravanaVisual },
+        pesajes: [], cantidadPesajes: 0, mensaje: 'Sin pesajes registrados',
+      };
+    }
+
+    // GDP entre cada par consecutivo
+    const conGdp = eventos.map((e, i) => {
+      if (i === 0) return { peso: e.peso, ts: e.ts, gdpDesdeAnterior: null };
+      const prev = eventos[i - 1];
+      const dias = (new Date(e.ts) - new Date(prev.ts)) / 86400000;
+      const gdp = dias > 0 ? (e.peso - prev.peso) / dias : null;
+      return { peso: e.peso, ts: e.ts, gdpDesdeAnterior: gdp != null ? Math.round(gdp * 1000) / 1000 : null };
+    });
+
+    const primer = eventos[0];
+    const ult = eventos[eventos.length - 1];
+    const diasTotal = (new Date(ult.ts) - new Date(primer.ts)) / 86400000;
+    const gdpPromedio = diasTotal > 0 ? Math.round((ult.peso - primer.peso) / diasTotal * 1000) / 1000 : null;
+
+    return {
+      animal: { id: animal.id, rfid: animal.rfid, caravanaVisual: animal.caravanaVisual, categoria: animal.categoria, sexo: animal.sexo },
+      cantidadPesajes: eventos.length,
+      primerPeso: primer.peso,
+      ultimoPeso: ult.peso,
+      gananciaTotal: ult.peso - primer.peso,
+      diasEntrePrimerUltimo: Math.round(diasTotal),
+      gdpPromedio,
+      pesajes: conGdp,
     };
   },
 };
@@ -550,11 +718,17 @@ async function startRealtime() {
 const SYSTEM_PROMPT = [
   'Asistente de voz de Campo Papi (gestion ganadera).',
   'Hablas castellano rioplatense, voseo, tono breve y directo.',
+  'PODES: crear y editar (lotes, animales, sesiones, eventos, movimientos, mediciones, finanzas)',
+  'Y TAMBIEN consultar/calcular: usa pesaje_stats para promedios/min/max,',
+  'animal_pesajes para historial+GDP de un animal, list_eventos para listar lecturas,',
+  'list_finanzas para totales ingresos/egresos/balance, list_mediciones_pasto, list_movimientos.',
   'REGLAS:',
   '- Respuestas brevisimas: 1-2 frases, sin floreo.',
+  '- Para preguntas tipo "cuanto pesa en promedio" usa pesaje_stats directo, no list_eventos.',
   '- Ejecuta funciones al toque sin pedir confirmacion si esta claro.',
   '- Si falta un id, llama primero al list_* correspondiente.',
-  '- No leas ids ni uuids en voz alta.',
+  '- No leas ids ni uuids en voz alta. Usa caravana visual o nombre.',
+  '- Para pesos, redondea a kg ("245 kilos"). Para GDP usa gramos por dia ("850 gramos por dia").',
   '- Si crean animal sin rfid se asigna uno temporal (TMP-...). Avisar muy corto.',
 ].join('\n');
 
